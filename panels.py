@@ -18,8 +18,6 @@ class FOOTPRINT_PT_Main(Panel):
         scene  = context.scene
         ao     = context.active_object
 
-        graph.sync_track_settings(scene)
-
         # ── Version header ──
         version = bl_info.get("version", ("?",))
         version_str = ".".join(str(v) for v in version)

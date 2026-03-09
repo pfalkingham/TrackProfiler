@@ -11,6 +11,10 @@ from .operators import SEGMENTS, _results
 GRAPH_MARGIN = 20
 GRAPH_WIDTH = 600
 GRAPH_HEIGHT = 300
+RESIZE_GRIP = 16  # px square in bottom-right corner used as resize handle
+
+DEFAULT_GRAPH_POS = (GRAPH_MARGIN, GRAPH_MARGIN)
+DEFAULT_GRAPH_SIZE = (GRAPH_WIDTH, GRAPH_HEIGHT)
 HEADER_HEIGHT = 42
 BOTTOM_PADDING = 28
 LEFT_PADDING = 50
@@ -32,6 +36,7 @@ SEGMENT_TITLES = {
 }
 
 _draw_handler = None
+_graph_keymaps = []  # (keymap, keymap_item) pairs registered by this addon
 
 
 def _on_graph_setting_changed(self, context):
@@ -62,9 +67,85 @@ class FOOTPRINT_OT_ToggleGraph(Operator):
         return {'FINISHED'}
 
 
+class FOOTPRINT_OT_GraphTransform(Operator):
+    """Click-drag graph to move; drag bottom-right corner to resize. ESC/RMB cancels."""
+    bl_idname = "footprint.graph_transform"
+    bl_label = "Move / Resize Graph"
+
+    _mode = None
+    _start_mouse = None
+    _start_pos = None
+    _start_size = None
+
+    @classmethod
+    def poll(cls, context):
+        scene = context.scene
+        return (
+            context.area is not None
+            and context.area.type == 'VIEW_3D'
+            and getattr(scene, 'footprint_graph_enabled', False)
+            and bool(_results)
+        )
+
+    def invoke(self, context, event):
+        region = context.region
+        if region is None or region.type != 'WINDOW':
+            return {'PASS_THROUGH'}
+
+        scene = context.scene
+        mx, my = event.mouse_region_x, event.mouse_region_y
+        rect = _graph_rect(region.width, region.height)
+        if rect is None:
+            return {'PASS_THROUGH'}
+
+        rx, ry, rw, rh = rect
+        in_resize = (rx + rw - RESIZE_GRIP <= mx <= rx + rw
+                     and ry <= my <= ry + RESIZE_GRIP)
+        in_rect = (rx <= mx <= rx + rw and ry <= my <= ry + rh)
+
+        if not in_rect:
+            return {'PASS_THROUGH'}
+
+        self._mode = 'RESIZE' if in_resize else 'MOVE'
+        self._start_mouse = (mx, my)
+        self._start_pos = tuple(scene.footprint_graph_pos)
+        self._start_size = tuple(scene.footprint_graph_size)
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        scene = context.scene
+        if event.type in {'RIGHTMOUSE', 'ESC'}:
+            scene.footprint_graph_pos = self._start_pos
+            scene.footprint_graph_size = self._start_size
+            tag_redraw_all_view3d()
+            return {'CANCELLED'}
+
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            return {'FINISHED'}
+
+        if event.type == 'MOUSEMOVE':
+            dx = event.mouse_region_x - self._start_mouse[0]
+            dy = event.mouse_region_y - self._start_mouse[1]
+            if self._mode == 'MOVE':
+                scene.footprint_graph_pos = (
+                    self._start_pos[0] + dx,
+                    self._start_pos[1] + dy,
+                )
+            else:
+                scene.footprint_graph_size = (
+                    max(220, self._start_size[0] + dx),
+                    max(160, self._start_size[1] - dy),
+                )
+            tag_redraw_all_view3d()
+
+        return {'RUNNING_MODAL'}
+
+
 _classes = [
     FOOTPRINT_PG_TrackDisplay,
     FOOTPRINT_OT_ToggleGraph,
+    FOOTPRINT_OT_GraphTransform,
 ]
 
 
@@ -110,6 +191,13 @@ def sync_track_settings(scene):
 
 def notify_results_changed(scene):
     sync_track_settings(scene)
+    tag_redraw_all_view3d()
+
+
+def _on_load_post(*args):
+    """Called after a .blend file loads. Sync track display state."""
+    for scene in bpy.data.scenes:
+        sync_track_settings(scene)
     tag_redraw_all_view3d()
 
 
@@ -159,13 +247,25 @@ def _draw_callback():
             if len(strip) >= 2:
                 _draw_line_strip(strip, tuple(track.color), 2.0)
 
+    # Resize grip — small triangle in bottom-right corner
+    gx = graph_rect[0] + graph_rect[2]
+    gy = graph_rect[1]
+    g = RESIZE_GRIP
+    grip_coords = [(gx - g, gy), (gx, gy), (gx, gy + g)]
+    _draw_batch('TRIS', grip_coords, (0.65, 0.65, 0.65, 0.45))
+
 
 def _graph_rect(region_width, region_height):
-    width = min(GRAPH_WIDTH, region_width - (GRAPH_MARGIN * 2))
-    height = min(GRAPH_HEIGHT, region_height - (GRAPH_MARGIN * 2))
+    scene = bpy.context.scene
+    pos = tuple(getattr(scene, 'footprint_graph_pos', DEFAULT_GRAPH_POS))
+    size = tuple(getattr(scene, 'footprint_graph_size', DEFAULT_GRAPH_SIZE))
+    width = min(size[0], region_width - GRAPH_MARGIN)
+    height = min(size[1], region_height - GRAPH_MARGIN)
     if width < 220 or height < 160:
         return None
-    return (GRAPH_MARGIN, GRAPH_MARGIN, width, height)
+    pos_x = max(GRAPH_MARGIN, min(pos[0], region_width - width - GRAPH_MARGIN))
+    pos_y = max(GRAPH_MARGIN, min(pos[1], region_height - height - GRAPH_MARGIN))
+    return (pos_x, pos_y, width, height)
 
 
 def _plot_rect(graph_rect):
@@ -293,9 +393,10 @@ def _draw_segment_guides(plot_rect, graph_rect, segment_layout):
 
 
 def _draw_depth_labels(plot_rect, depth_min, depth_max):
-    # top label: shallowest (least negative) depth; bottom label: deepest
-    _draw_text(plot_rect[0] - 42, plot_rect[1] + plot_rect[3] - 6, f"{depth_min:.2f}", 11, (0.92, 0.92, 0.92, 1.0))
-    _draw_text(plot_rect[0] - 42, plot_rect[1] - 4, f"{depth_max:.2f}", 11, (0.92, 0.92, 0.92, 1.0))
+    # Graph Y-axis increases upward: top shows the shallowest (least
+    # negative) depth value, bottom shows the deepest (most negative).
+    _draw_text(plot_rect[0] - 42, plot_rect[1] + plot_rect[3] - 6, f"{depth_max:.2f}", 11, (0.92, 0.92, 0.92, 1.0))
+    _draw_text(plot_rect[0] - 42, plot_rect[1] - 4, f"{depth_min:.2f}", 11, (0.92, 0.92, 0.92, 1.0))
 
 
 def _norm_to_x(value, plot_rect):
@@ -402,24 +503,56 @@ def register():
         update=_on_graph_setting_changed,
     )
     bpy.types.Scene.footprint_graph_tracks = CollectionProperty(type=FOOTPRINT_PG_TrackDisplay)
+    bpy.types.Scene.footprint_graph_pos = FloatVectorProperty(
+        name="Graph Position",
+        size=2,
+        default=DEFAULT_GRAPH_POS,
+    )
+    bpy.types.Scene.footprint_graph_size = FloatVectorProperty(
+        name="Graph Size",
+        size=2,
+        default=DEFAULT_GRAPH_SIZE,
+    )
 
     if _draw_handler is None:
         _draw_handler = bpy.types.SpaceView3D.draw_handler_add(_draw_callback, (), 'WINDOW', 'POST_PIXEL')
+
+    if _on_load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load_post)
+
+    # Keymap: LEFT_MOUSE in VIEW_3D window invokes graph_transform;
+    # the operator itself passes through if cursor is not on the graph.
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    if kc:
+        km = kc.keymaps.new(name='3D View', space_type='VIEW_3D')
+        kmi = km.keymap_items.new(
+            'footprint.graph_transform', 'LEFTMOUSE', 'PRESS'
+        )
+        _graph_keymaps.append((km, kmi))
 
 
 def unregister():
     global _draw_handler
 
+    for km, kmi in _graph_keymaps:
+        km.keymap_items.remove(kmi)
+    _graph_keymaps.clear()
+
     if _draw_handler is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handler, 'WINDOW')
         _draw_handler = None
 
-    if hasattr(bpy.types.Scene, "footprint_graph_tracks"):
-        del bpy.types.Scene.footprint_graph_tracks
-    if hasattr(bpy.types.Scene, "footprint_graph_x_mode"):
-        del bpy.types.Scene.footprint_graph_x_mode
-    if hasattr(bpy.types.Scene, "footprint_graph_enabled"):
-        del bpy.types.Scene.footprint_graph_enabled
+    if _on_load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load_post)
+
+    for prop in (
+        'footprint_graph_tracks', 'footprint_graph_x_mode',
+        'footprint_graph_enabled', 'footprint_graph_pos',
+        'footprint_graph_size',
+    ):
+        if hasattr(bpy.types.Scene, prop):
+            delattr(bpy.types.Scene, prop)
 
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
