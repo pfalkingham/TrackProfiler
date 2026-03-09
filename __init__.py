@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Track Depth Profiler",
-    "version": (1, 0, 1),
+    "version": (1, 0, 2),
     "blender": (3, 0, 0),
     "location": "View3D > N-Panel > Footprint",
     "description": (
@@ -12,7 +12,7 @@ bl_info = {
 }
 
 import bpy
-from . import operators, panels
+from . import graph, operators, panels
 
 _classes = [
     operators.FOOTPRINT_OT_Initialize,
@@ -24,6 +24,7 @@ _classes = [
 
 
 def register():
+    graph.register()
     for cls in _classes:
         bpy.utils.register_class(cls)
     bpy.types.Scene.footprint_status = bpy.props.StringProperty(
@@ -33,6 +34,7 @@ def register():
 
 
 def unregister():
+    graph.unregister()
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
     del bpy.types.Scene.footprint_status

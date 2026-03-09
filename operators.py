@@ -230,6 +230,8 @@ class FOOTPRINT_OT_Analyse(Operator):
         )
 
     def execute(self, context):
+        from . import graph
+
         mesh_obj  = context.active_object
         mesh_name = mesh_obj.name
 
@@ -261,6 +263,7 @@ class FOOTPRINT_OT_Analyse(Operator):
             "seg_lengths":  seg_lengths,
             "lm_coords":    lm_coords,
         }
+        graph.notify_results_changed(context.scene)
 
         context.scene.footprint_status = (
             f"'{mesh_name}' analysed. {len(_results)} track(s) ready to export."
@@ -342,6 +345,9 @@ class FOOTPRINT_OT_ClearResults(Operator):
     bl_label  = "Clear Results"
 
     def execute(self, context):
+        from . import graph
+
         _results.clear()
+        graph.notify_results_changed(context.scene)
         context.scene.footprint_status = "Results cleared."
         return {'FINISHED'}

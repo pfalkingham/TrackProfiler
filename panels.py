@@ -1,7 +1,7 @@
 import bpy
 from bpy.types import Panel
 from .operators import _results, find_locator, all_locators_present, LANDMARK_NAMES, LANDMARK_LABELS
-from . import bl_info
+from . import bl_info, graph
 
 
 # ── Panel ─────────────────────────────────────────────────────────────────────
@@ -17,6 +17,8 @@ class FOOTPRINT_PT_Main(Panel):
         layout = self.layout
         scene  = context.scene
         ao     = context.active_object
+
+        graph.sync_track_settings(scene)
 
         # ── Version header ──
         version = bl_info.get("version", ("?",))
@@ -63,10 +65,30 @@ class FOOTPRINT_PT_Main(Panel):
         # ── Stored results ──
         layout.label(text=f"Analysed tracks:  {len(_results)}", icon='PRESET')
         if _results:
+            graph_box = layout.box()
+            graph_header = graph_box.row(align=True)
+            graph_header.operator(
+                "footprint.toggle_graph",
+                text="Hide Graph" if scene.footprint_graph_enabled else "Show Graph",
+                icon='HIDE_OFF' if scene.footprint_graph_enabled else 'HIDE_ON',
+            )
+            graph_header.prop(scene, "footprint_graph_x_mode", text="")
+
             box = layout.box()
             for name in _results:
+                track = graph.get_track_display(scene, name)
                 segs = _results[name]["seg_lengths"]
-                box.label(text=name, icon='CHECKMARK')
+                row = box.row(align=True)
+                if track is not None:
+                    row.prop(
+                        track,
+                        "visible",
+                        text="",
+                        icon='HIDE_OFF' if track.visible else 'HIDE_ON',
+                        emboss=False,
+                    )
+                    row.prop(track, "color", text="")
+                row.label(text=name, icon='CHECKMARK')
                 for seg_label, length in segs.items():
                     box.label(text=f"      {seg_label}:  {length:.1f}")
 
