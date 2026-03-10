@@ -51,7 +51,11 @@ class FOOTPRINT_PT_Main(Panel):
             row = layout.row()
             row.scale_y = 1.3
             row.enabled = all_locators_present(ao.name)
-            row.operator("footprint.analyse", icon='PLAY')
+            row.operator(
+                "footprint.analyse",
+                text="Re-analyse" if ao.name in _results else "Analyse",
+                icon='FILE_REFRESH' if ao.name in _results else 'PLAY',
+            )
 
             if ao.name in _results:
                 layout.label(text="  ✓ Data stored", icon='CHECKMARK')

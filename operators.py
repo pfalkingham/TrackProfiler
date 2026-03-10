@@ -269,11 +269,8 @@ class FOOTPRINT_OT_Initialize(Operator):
             self._click_count += 1
 
             if self._click_count == 4:
-                context.scene.footprint_status = (
-                    f"All 4 landmarks set for '{self._mesh_obj.name}'. "
-                    "Move them if needed, then click Analyse."
-                )
-                self.report({'INFO'}, f"All landmarks placed for '{self._mesh_obj.name}'")
+                self.report({'INFO'}, f"All landmarks placed for '{self._mesh_obj.name}' — running analysis")
+                bpy.ops.footprint.analyse()
                 return {'FINISHED'}
 
             self._set_status(context, self._click_count)
