@@ -76,6 +76,7 @@ class FOOTPRINT_PT_Main(Panel):
             for name in _results:
                 track = graph.get_track_display(scene, name)
                 segs = _results[name]["seg_lengths"]
+
                 row = box.row(align=True)
                 if track is not None:
                     row.prop(
@@ -86,9 +87,22 @@ class FOOTPRINT_PT_Main(Panel):
                         emboss=False,
                     )
                     row.prop(track, "color", text="")
+                    row.prop(
+                        track,
+                        "expand",
+                        text="",
+                        icon='DISCLOSURE_TRI_DOWN' if track.expand else 'DISCLOSURE_TRI_RIGHT',
+                        emboss=False,
+                    )
                 row.label(text=name, icon='CHECKMARK')
-                for seg_label, length in segs.items():
-                    box.label(text=f"      {seg_label}:  {length:.1f}")
+                del_op = row.operator("footprint.delete_track", text="", icon='X', emboss=False)
+                del_op.mesh_name = name
+
+                if track is not None and track.expand:
+                    sub = box.column(align=True)
+                    sub.scale_y = 0.8
+                    for seg_label, length in segs.items():
+                        sub.label(text=f"      {seg_label}:  {length:.1f}")
 
             layout.separator()
             layout.operator("footprint.export_csv",    icon='EXPORT', text="Export CSV")

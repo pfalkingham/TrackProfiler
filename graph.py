@@ -5,7 +5,7 @@ import gpu
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatVectorProperty, StringProperty
 from bpy.types import Operator, PropertyGroup
 
-from .operators import SEGMENTS, _results
+from .operators import SEGMENTS, SEGMENT_COLORS, _results
 
 
 GRAPH_MARGIN = 20
@@ -55,6 +55,7 @@ class FOOTPRINT_PG_TrackDisplay(PropertyGroup):
         default=PALETTE[0],
         update=_on_graph_setting_changed,
     )
+    expand: BoolProperty(name="Show Segment Lengths", default=False)
 
 
 class FOOTPRINT_OT_ToggleGraph(Operator):
@@ -194,8 +195,11 @@ def notify_results_changed(scene):
     tag_redraw_all_view3d()
 
 
+@bpy.app.handlers.persistent
 def _on_load_post(*args):
     """Called after a .blend file loads. Sync track display state."""
+    from . import operators
+    operators.load_results_from_scene()
     for scene in bpy.data.scenes:
         sync_track_settings(scene)
     tag_redraw_all_view3d()
@@ -389,7 +393,8 @@ def _draw_segment_guides(plot_rect, graph_rect, segment_layout):
         text_width, _ = _text_size(text, 11)
         center_x = left + ((right - left - text_width) * 0.5)
         label_y = graph_rect[1] + graph_rect[3] - 38
-        _draw_text(center_x, label_y, text, 11, (0.93, 0.93, 0.93, 1.0))
+        title_color = SEGMENT_COLORS.get(segment_key, (0.93, 0.93, 0.93, 1.0))
+        _draw_text(center_x, label_y, text, 11, title_color)
 
 
 def _draw_depth_labels(plot_rect, depth_min, depth_max):

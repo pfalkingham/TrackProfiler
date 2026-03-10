@@ -18,6 +18,7 @@ _classes = [
     operators.FOOTPRINT_OT_Initialize,
     operators.FOOTPRINT_OT_Analyse,
     operators.FOOTPRINT_OT_ExportCSV,
+    operators.FOOTPRINT_OT_DeleteTrack,
     operators.FOOTPRINT_OT_ClearResults,
     panels.FOOTPRINT_PT_Main,
 ]

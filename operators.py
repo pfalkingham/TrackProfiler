@@ -17,6 +17,14 @@ SEGMENTS = [
     ("MT5", "HEL", "MT5_Heel"),
     ("HEL", "MT1", "Heel_MT1"),   # medial arch — change second entry to HAL to close loop instead
 ]
+
+# Fixed viewport / graph colours for each segment (RGBA, 0–1 range)
+SEGMENT_COLORS = {
+    "Hallux_MT1": (0.90, 0.22, 0.22, 1.0),   # red
+    "MT1_MT5":    (0.22, 0.68, 0.30, 1.0),   # green
+    "MT5_Heel":   (0.20, 0.55, 0.90, 1.0),   # blue
+    "Heel_MT1":   (0.92, 0.65, 0.12, 1.0),   # amber
+}
 # ─────────────────────────────────────────────────────────────────────────────
 
 import bpy
@@ -24,6 +32,7 @@ import bpy_extras.view3d_utils
 import mathutils
 import csv
 import os
+import json
 from bpy.props import StringProperty
 from bpy.types import Operator
 
@@ -46,6 +55,87 @@ def find_locator(mesh_name: str, landmark: str):
 
 def all_locators_present(mesh_name: str) -> bool:
     return all(find_locator(mesh_name, lm) is not None for lm in LANDMARK_NAMES)
+
+
+def segment_line_name(mesh_name: str, seg_label: str) -> str:
+    """Canonical name for a segment line object: '<mesh>_LINE_<seg>'."""
+    return f"{mesh_name}_LINE_{seg_label}"
+
+
+def create_segment_lines(mesh_obj):
+    """Create or replace 3D line objects connecting each segment's locator pair."""
+    mesh_name  = mesh_obj.name
+    collection = bpy.context.collection
+    for (lm_a, lm_b, seg_label) in SEGMENTS:
+        line_name = segment_line_name(mesh_name, seg_label)
+        # Remove any existing line object for this segment
+        existing = bpy.data.objects.get(line_name)
+        if existing:
+            me_old = existing.data if isinstance(existing.data, bpy.types.Mesh) else None
+            bpy.data.objects.remove(existing, do_unlink=True)
+            if me_old is not None and me_old.users == 0:
+                bpy.data.meshes.remove(me_old)
+
+        loc_a = find_locator(mesh_name, lm_a)
+        loc_b = find_locator(mesh_name, lm_b)
+        if loc_a is None or loc_b is None:
+            continue
+
+        pa    = tuple(loc_a.matrix_world.translation)
+        pb    = tuple(loc_b.matrix_world.translation)
+        color = SEGMENT_COLORS.get(seg_label, (0.8, 0.8, 0.8, 1.0))
+
+        # Build a 2-vert / 1-edge mesh
+        me = bpy.data.meshes.new(line_name)
+        me.from_pydata([pa, pb], [(0, 1)], [])
+        me.update()
+
+        # Create or reuse a per-segment material
+        mat_name = f"FP_SEG_{seg_label}"
+        mat = bpy.data.materials.get(mat_name)
+        if mat is None:
+            mat = bpy.data.materials.new(mat_name)
+            mat.use_nodes = False
+        mat.diffuse_color = color
+        me.materials.append(mat)
+
+        # Create the object
+        line_obj               = bpy.data.objects.new(line_name, me)
+        line_obj.display_type  = 'WIRE'
+        line_obj.show_in_front = True
+        line_obj.color         = color
+        collection.objects.link(line_obj)
+
+        # Parent to mesh so lines move / scale with the footprint
+        line_obj.parent                = mesh_obj
+        line_obj.matrix_parent_inverse = mesh_obj.matrix_world.inverted()
+
+
+def remove_segment_lines(mesh_name: str):
+    """Remove the four segment line objects for a given mesh, if they exist."""
+    for _, _, seg_label in SEGMENTS:
+        name = segment_line_name(mesh_name, seg_label)
+        obj  = bpy.data.objects.get(name)
+        if obj:
+            me = obj.data if isinstance(obj.data, bpy.types.Mesh) else None
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if me is not None and me.users == 0:
+                bpy.data.meshes.remove(me)
+
+
+def load_results_from_scene():
+    """Restore analysis results from mesh custom properties after a file load."""
+    _results.clear()
+    for obj in bpy.data.objects:
+        if obj.type != 'MESH':
+            continue
+        data_str = obj.get("fp_track_data")
+        if data_str is None:
+            continue
+        try:
+            _results[obj.name] = json.loads(str(data_str))
+        except (json.JSONDecodeError, TypeError):
+            pass  # corrupt or missing data — skip silently
 
 
 def raycast_z(mesh_obj, x_world: float, y_world: float):
@@ -116,6 +206,7 @@ class FOOTPRINT_OT_Initialize(Operator):
         self._mesh_obj        = context.active_object
         self._click_count     = 0
         self._session_empties = []
+        remove_segment_lines(self._mesh_obj.name)
         self._set_status(context, 0)
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
@@ -263,6 +354,8 @@ class FOOTPRINT_OT_Analyse(Operator):
             "seg_lengths":  seg_lengths,
             "lm_coords":    lm_coords,
         }
+        create_segment_lines(mesh_obj)
+        mesh_obj["fp_track_data"] = json.dumps(_results[mesh_name])
         graph.notify_results_changed(context.scene)
 
         context.scene.footprint_status = (
@@ -298,44 +391,118 @@ class FOOTPRINT_OT_ExportCSV(Operator):
         if not fp.lower().endswith(".csv"):
             fp += ".csv"
 
-        fieldnames = [
-            "mesh", "segment", "point_index",
-            "distance_along_transect_mm", "depth_mm",
-        ]
+        track_names = list(_results.keys())
+
+        # Build fieldnames: fixed cols + one group of 3 cols per track
+        data_cols = []
+        for tn in track_names:
+            data_cols.extend([
+                f"{tn}_distance_mm",
+                f"{tn}_depth_mm",
+                f"{tn}_cumulative_distance_mm",
+            ])
+        fieldnames = ["segment", "point_index", "cumulative_index"] + data_cols
+
+        # Pre-compute per-track cumulative segment offsets
+        # seg_offsets[mesh_name][seg_label] = sum of preceding segment lengths
+        seg_offsets: dict = {}
+        for mesh_name, result in _results.items():
+            offsets: dict = {}
+            running = 0.0
+            for _, _, seg_label in SEGMENTS:
+                offsets[seg_label] = running
+                running += result["seg_lengths"].get(seg_label, 0.0)
+            seg_offsets[mesh_name] = offsets
+
+        # Build fast lookup: track_data[mesh_name][seg_label][point_index] = row
+        track_data: dict = {}
+        for mesh_name, result in _results.items():
+            by_seg: dict = {}
+            for row in result["rows"]:
+                by_seg.setdefault(row["segment"], {})[row["point_index"]] = row
+            track_data[mesh_name] = by_seg
 
         with open(fp, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
 
+            # ── Metadata block ──
             for mesh_name, result in _results.items():
-                # ── Metadata rows ──
-                # Landmark world coordinates
                 for lm, xyz in result["lm_coords"].items():
                     writer.writerow({
-                        "mesh":                       mesh_name,
-                        "segment":                    f"META_LANDMARK_{lm}",
-                        "point_index":                "",
-                        "distance_along_transect_mm": f"{xyz[0]:.4f},{xyz[1]:.4f},{xyz[2]:.4f}",
-                        "depth_mm":                   "",
+                        "segment":          f"META_LANDMARK_{lm}",
+                        "point_index":      mesh_name,
+                        "cumulative_index": f"{xyz[0]:.4f},{xyz[1]:.4f},{xyz[2]:.4f}",
                     })
-                # Segment XY lengths (scene units; use for relative-size visualisation)
                 for seg_label, length in result["seg_lengths"].items():
                     writer.writerow({
-                        "mesh":                       mesh_name,
-                        "segment":                    f"META_LENGTH_{seg_label}",
-                        "point_index":                "",
-                        "distance_along_transect_mm": f"{length:.4f}",
-                        "depth_mm":                   "",
+                        "segment":          f"META_LENGTH_{seg_label}",
+                        "point_index":      mesh_name,
+                        "cumulative_index": f"{length:.4f}",
                     })
 
-                # ── Data rows ──
-                writer.writerows(result["rows"])
+            # ── Data block: one row per (segment, sample_point) ──
+            cumulative_index = 0
+            for _, _, seg_label in SEGMENTS:
+                for pt_idx in range(SAMPLES_PER_SEGMENT):
+                    out_row: dict = {
+                        "segment":          seg_label,
+                        "point_index":      pt_idx,
+                        "cumulative_index": cumulative_index,
+                    }
+                    for mesh_name in track_names:
+                        row = track_data.get(mesh_name, {}).get(seg_label, {}).get(pt_idx)
+                        if row is not None:
+                            dist  = row.get("distance_along_transect_mm", "")
+                            depth = row.get("depth_mm", "")
+                            if dist != "" and dist is not None:
+                                cum_dist = round(
+                                    seg_offsets[mesh_name][seg_label] + float(dist), 4
+                                )
+                            else:
+                                cum_dist = ""
+                            out_row[f"{mesh_name}_distance_mm"]            = dist
+                            out_row[f"{mesh_name}_depth_mm"]               = depth
+                            out_row[f"{mesh_name}_cumulative_distance_mm"] = cum_dist
+                    writer.writerow(out_row)
+                    cumulative_index += 1
 
-        total_rows = sum(len(r["rows"]) for r in _results.values())
+        total_points = len(SEGMENTS) * SAMPLES_PER_SEGMENT
         self.report(
             {'INFO'},
-            f"Exported {total_rows} data rows ({len(_results)} tracks) → {fp}"
+            f"Exported {total_points} data rows × {len(track_names)} track(s) → {fp}"
         )
+        return {'FINISHED'}
+
+
+class FOOTPRINT_OT_DeleteTrack(Operator):
+    """Delete one track's data, segment lines, and landmark locators."""
+    bl_idname  = "footprint.delete_track"
+    bl_label   = "Delete Track"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mesh_name: StringProperty()
+
+    def execute(self, context):
+        from . import graph
+
+        name = self.mesh_name
+        remove_segment_lines(name)
+
+        # Remove landmark locators
+        for lm in LANDMARK_NAMES:
+            loc = find_locator(name, lm)
+            if loc:
+                bpy.data.objects.remove(loc, do_unlink=True)
+
+        # Remove persisted custom property
+        obj = bpy.data.objects.get(name)
+        if obj and "fp_track_data" in obj:
+            del obj["fp_track_data"]
+
+        _results.pop(name, None)
+        graph.notify_results_changed(context.scene)
+        context.scene.footprint_status = f"'{name}' deleted."
         return {'FINISHED'}
 
 
@@ -347,6 +514,11 @@ class FOOTPRINT_OT_ClearResults(Operator):
     def execute(self, context):
         from . import graph
 
+        for mesh_name in list(_results.keys()):
+            remove_segment_lines(mesh_name)
+            obj = bpy.data.objects.get(mesh_name)
+            if obj and "fp_track_data" in obj:
+                del obj["fp_track_data"]
         _results.clear()
         graph.notify_results_changed(context.scene)
         context.scene.footprint_status = "Results cleared."
