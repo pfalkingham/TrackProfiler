@@ -134,9 +134,15 @@ class FOOTPRINT_OT_GraphTransform(Operator):
                     self._start_pos[1] + dy,
                 )
             else:
+                new_height = max(160, self._start_size[1] - dy)
+                actual_dy = self._start_size[1] - new_height
+                scene.footprint_graph_pos = (
+                    self._start_pos[0],
+                    self._start_pos[1] + actual_dy,
+                )
                 scene.footprint_graph_size = (
                     max(220, self._start_size[0] + dx),
-                    max(160, self._start_size[1] - dy),
+                    new_height,
                 )
             tag_redraw_all_view3d()
 
