@@ -35,6 +35,20 @@ Metadata rows (landmark coords and segment lengths) precede the profile rows.
 File defaults to footprint_profiles.csv in the current blend directory.
 Clear results with the Clear Results button when finished; this does not remove your mesh or locators.
 
+### Animated frame profiles ###
+
+There is also a separate script, `trackprofiler_animated_profiles.py`, that can bake one profile per frame for an animated mesh without changing the addon itself.
+
+How to use it:
+
+1. Enable the TrackProfiler addon and make sure your mesh already has the four landmarks placed.
+2. Open the script in Blender's Text Editor and run it.
+3. Select the animated mesh you want to profile.
+4. Click the new `Bake Animated Profiles` button in the TrackProfiler panel.
+5. Scrub the timeline to see the baked lines in the graph. The current frame is shown in white, and the other frames fade from red at the start to blue at the end.
+
+The script stores the baked data on the mesh object, so it can be restored after reopening the file.
+
 ### CSV format ###
 mesh	segment	point_index	distance_along_transect_mm	depth_mm
 segment values include the four transect labels (Hallux_MT1, etc.).
